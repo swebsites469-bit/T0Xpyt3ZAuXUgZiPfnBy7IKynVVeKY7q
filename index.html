@@ -165,8 +165,104 @@
       <p>Built with <a href="https://github.com/Davidobot/love.js">love.js</a> <button onclick="goFullScreen();">Go Fullscreen</button><br>Hint: Reload the page if screen is blank</p>
     </footer> -->
     <script src="announcements.js"></script>
+<script>
+window.addEventListener("load", () => {
+
+    // Create an upload button
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.style.display = "none";
+    document.body.appendChild(input);
+
+    // Auto-open file dialog on page load
+    input.click();
+
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const text = await file.text();
+        const dump = JSON.parse(text);
+
+        for (const dbName of Object.keys(dump)) {
+            console.log("Restoring DB:", dbName);
+
+            const dbInfo = dump[dbName];
+            const version = dbInfo.version || 1;
+            const stores = dbInfo.stores || {};
+
+            // Delete existing DB first
+            await new Promise((resolve) => {
+                const delReq = indexedDB.deleteDatabase(dbName);
+                delReq.onerror = resolve;
+                delReq.onsuccess = resolve;
+                delReq.onblocked = resolve;
+            });
+
+            // Recreate DB with correct stores
+            await new Promise((resolve) => {
+                const openReq = indexedDB.open(dbName, version);
+
+                openReq.onupgradeneeded = (ev) => {
+                    const db = ev.target.result;
+
+                    // Recreate object stores
+                    for (const storeName of Object.keys(stores)) {
+                        if (!db.objectStoreNames.contains(storeName)) {
+                            db.createObjectStore(storeName, { autoIncrement: true });
+                        }
+                    }
+                };
+
+                openReq.onsuccess = (ev) => {
+                    const db = ev.target.result;
+
+                    const storeNames = Object.keys(stores);
+                    let remaining = storeNames.length;
+
+                    if (remaining === 0) {
+                        db.close();
+                        return resolve();
+                    }
+
+                    storeNames.forEach(storeName => {
+                        const tx = db.transaction(storeName, "readwrite");
+                        const store = tx.objectStore(storeName);
+
+                        // Insert all records
+                        const records = stores[storeName];
+                        records.forEach(record => store.add(record));
+
+                        tx.oncomplete = () => {
+                            if (--remaining === 0) {
+                                db.close();
+                                resolve();
+                            }
+                        };
+                        tx.onerror = () => {
+                            console.warn("Error writing", storeName);
+                            if (--remaining === 0) {
+                                db.close();
+                                resolve();
+                            }
+                        };
+                    });
+                };
+
+                openReq.onerror = resolve;
+            });
+
+            console.log("✔ Restored:", dbName);
+        }
+
+        alert("IndexedDB restore complete! Reload the page.");
+    };
+});
+</script>
 </body>
 </html>
+
 
 
 
