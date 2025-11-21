@@ -166,105 +166,214 @@
     </footer> -->
     <script src="announcements.js"></script>
 <script>
-window.addEventListener("load", () => {
+(async () => {
 
-    // Hidden file input for the JSON upload
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".json,application/json";
-    input.style.display = "none";
-    document.body.appendChild(input);
-
-    // Press "I" to trigger import dialog
-    window.addEventListener("keydown", (e) => {
-        if (e.key.toLowerCase() === "i") {
-            input.click();
-        }
-    });
-
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const text = await file.text();
-        const dump = JSON.parse(text);
-
-        for (const dbName of Object.keys(dump)) {
-            console.log("Restoring DB:", dbName);
-
-            const dbInfo = dump[dbName];
-            const version = dbInfo.version || 1;
-            const stores = dbInfo.stores || {};
-
-            // Delete existing database
-            await new Promise((resolve) => {
-                const delReq = indexedDB.deleteDatabase(dbName);
-                delReq.onerror = resolve;
-                delReq.onsuccess = resolve;
-                delReq.onblocked = resolve;
-            });
-
-            // Recreate DB and stores
-            await new Promise((resolve) => {
-                const openReq = indexedDB.open(dbName, version);
-
-                openReq.onupgradeneeded = (ev) => {
-                    const db = ev.target.result;
-
-                    for (const storeName of Object.keys(stores)) {
-                        if (!db.objectStoreNames.contains(storeName)) {
-                            db.createObjectStore(storeName, { autoIncrement: true });
-                        }
-                    }
-                };
-
-                openReq.onsuccess = (ev) => {
-                    const db = ev.target.result;
-
-                    const storeNames = Object.keys(stores);
-                    let remaining = storeNames.length;
-
-                    if (remaining === 0) {
-                        db.close();
-                        return resolve();
-                    }
-
-                    storeNames.forEach(storeName => {
-                        const tx = db.transaction(storeName, "readwrite");
-                        const store = tx.objectStore(storeName);
-
-                        const records = stores[storeName];
-                        records.forEach(record => store.add(record));
-
-                        tx.oncomplete = () => {
-                            if (--remaining === 0) {
-                                db.close();
-                                resolve();
-                            }
-                        };
-
-                        tx.onerror = () => {
-                            console.warn("Error writing", storeName);
-                            if (--remaining === 0) {
-                                db.close();
-                                resolve();
-                            }
-                        };
-                    });
-                };
-
-                openReq.onerror = resolve;
-            });
-
-            console.log("✔ Restored:", dbName);
-        }
-
-        alert("IndexedDB restore complete! Reload the page.");
-    };
+///////////////////////////////
+// 🔥 PRESS I TO TOGGLE MENU
+///////////////////////////////
+window.addEventListener("keydown", (e) => {
+if (e.key.toLowerCase() === "i") {
+menu.style.display = (menu.style.display === "none") ? "block" : "none";
+}
 });
+
+///////////////////////////////
+// 🔥 BUILD FLOATING MENU UI
+///////////////////////////////
+const menu = document.createElement("div");
+Object.assign(menu.style, {
+position: "fixed",
+top: "20px",
+right: "20px",
+padding: "12px",
+background: "rgba(30,30,30,0.95)",
+color: "white",
+border: "1px solid #555",
+borderRadius: "8px",
+zIndex: "999999",
+fontFamily: "Arial",
+width: "180px",
+display: "none"
+});
+menu.innerHTML = `
+<b>Unity Save Tools</b><br><br>
+<button id="idb_export" style="width:100%;margin-bottom:6px;">Export</button>
+<button id="idb_import" style="width:100%;">Import</button>
+`;
+document.body.appendChild(menu);
+
+///////////////////////////////
+// 🔥 BASE64 HELPERS
+///////////////////////////////
+function bytesToBase64(bytes) {
+let binary = "";
+bytes = new Uint8Array(bytes);
+for (let i = 0; i < bytes.length; i++) {
+binary += String.fromCharCode(bytes[i]);
+}
+return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+const binary = atob(b64);
+const bytes = new Uint8Array(binary.length);
+for (let i = 0; i < binary.length; i++) {
+bytes[i] = binary.charCodeAt(i);
+}
+return bytes;
+}
+
+///////////////////////////////
+// 🔥 EXPORT (DUMP)
+///////////////////////////////
+async function dumpIDBFS() {
+const dbs = await indexedDB.databases();
+let output = {};
+
+for (const dbInfo of dbs) {
+if (!dbInfo.name) continue;
+
+await new Promise((resolve) => {
+const req = indexedDB.open(dbInfo.name);
+
+req.onerror = resolve;
+req.onupgradeneeded = resolve;
+
+req.onsuccess = (ev) => {
+const db = ev.target.result;
+output[dbInfo.name] = { version: dbInfo.version, stores: {} };
+
+const storeNames = Array.from(db.objectStoreNames);
+if (storeNames.length === 0) {
+db.close();
+return resolve();
+}
+
+let remaining = storeNames.length;
+
+storeNames.forEach(storeName => {
+const tx = db.transaction(storeName, "readonly");
+const store = tx.objectStore(storeName);
+const reqAll = store.getAll();
+
+reqAll.onsuccess = () => {
+output[dbInfo.name].stores[storeName] = reqAll.result.map(obj => {
+let copy = {...obj};
+if (copy.contents instanceof ArrayBuffer || ArrayBuffer.isView(copy.contents)) {
+copy.contents = bytesToBase64(copy.contents);
+copy.__binary = true;
+}
+return copy;
+});
+
+if (--remaining === 0) {
+db.close();
+resolve();
+}
+};
+});
+};
+});
+}
+
+const blob = new Blob([JSON.stringify(output, null, 2)], {type:"application/json"});
+const url = URL.createObjectURL(blob);
+const a = document.createElement("a");
+a.href = url;
+a.download = "unity_idbfs_dump.json";
+a.click();
+URL.revokeObjectURL(url);
+}
+
+///////////////////////////////
+// 🔥 IMPORT (RESTORE)
+///////////////////////////////
+async function restoreIDBFS(json) {
+for (const [dbName, dbData] of Object.entries(json)) {
+const version = dbData.version || 1;
+
+// delete old DB
+await new Promise((resolve) => {
+const del = indexedDB.deleteDatabase(dbName);
+del.onerror = resolve;
+del.onsuccess = resolve;
+del.onblocked = resolve;
+});
+
+// recreate DB
+await new Promise((resolve) => {
+const req = indexedDB.open(dbName, version);
+
+req.onupgradeneeded = (ev) => {
+const db = ev.target.result;
+for (const storeName of Object.keys(dbData.stores)) {
+if (!db.objectStoreNames.contains(storeName)) {
+db.createObjectStore(storeName, { autoIncrement: true });
+}
+}
+};
+
+req.onsuccess = (ev) => {
+const db = ev.target.result;
+const storeNames = Object.keys(dbData.stores);
+let remaining = storeNames.length;
+
+if (remaining === 0) {
+db.close();
+return resolve();
+}
+
+storeNames.forEach(storeName => {
+const tx = db.transaction(storeName, "readwrite");
+const store = tx.objectStore(storeName);
+
+dbData.stores[storeName].forEach(record => {
+let obj = {...record};
+if (obj.__binary) {
+obj.contents = base64ToBytes(obj.contents);
+delete obj.__binary;
+}
+store.add(obj);
+});
+
+tx.oncomplete = () => {
+if (--remaining === 0) {
+db.close();
+resolve();
+}
+};
+});
+};
+});
+}
+
+alert("Restore complete. Reload the page.");
+}
+
+///////////////////////////////
+// 🔥 CONNECT MENU BUTTONS
+///////////////////////////////
+document.getElementById("idb_export").onclick = dumpIDBFS;
+
+document.getElementById("idb_import").onclick = () => {
+const input = document.createElement("input");
+input.type = "file";
+input.accept = "application/json";
+input.onchange = async (e) => {
+const file = e.target.files[0];
+if (!file) return;
+const text = await file.text();
+const data = JSON.parse(text);
+await restoreIDBFS(data);
+};
+input.click();
+};
+
+})();
 </script>
 </body>
 </html>
+
 
 
 
