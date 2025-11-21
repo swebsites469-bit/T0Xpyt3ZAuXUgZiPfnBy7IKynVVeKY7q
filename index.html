@@ -168,15 +168,19 @@
 <script>
 window.addEventListener("load", () => {
 
-    // Create an upload button
+    // Hidden file input for the JSON upload
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json,application/json";
     input.style.display = "none";
     document.body.appendChild(input);
 
-    // Auto-open file dialog on page load
-    input.click();
+    // Press "I" to trigger import dialog
+    window.addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() === "i") {
+            input.click();
+        }
+    });
 
     input.onchange = async (e) => {
         const file = e.target.files[0];
@@ -192,7 +196,7 @@ window.addEventListener("load", () => {
             const version = dbInfo.version || 1;
             const stores = dbInfo.stores || {};
 
-            // Delete existing DB first
+            // Delete existing database
             await new Promise((resolve) => {
                 const delReq = indexedDB.deleteDatabase(dbName);
                 delReq.onerror = resolve;
@@ -200,14 +204,13 @@ window.addEventListener("load", () => {
                 delReq.onblocked = resolve;
             });
 
-            // Recreate DB with correct stores
+            // Recreate DB and stores
             await new Promise((resolve) => {
                 const openReq = indexedDB.open(dbName, version);
 
                 openReq.onupgradeneeded = (ev) => {
                     const db = ev.target.result;
 
-                    // Recreate object stores
                     for (const storeName of Object.keys(stores)) {
                         if (!db.objectStoreNames.contains(storeName)) {
                             db.createObjectStore(storeName, { autoIncrement: true });
@@ -230,7 +233,6 @@ window.addEventListener("load", () => {
                         const tx = db.transaction(storeName, "readwrite");
                         const store = tx.objectStore(storeName);
 
-                        // Insert all records
                         const records = stores[storeName];
                         records.forEach(record => store.add(record));
 
@@ -240,6 +242,7 @@ window.addEventListener("load", () => {
                                 resolve();
                             }
                         };
+
                         tx.onerror = () => {
                             console.warn("Error writing", storeName);
                             if (--remaining === 0) {
@@ -262,6 +265,7 @@ window.addEventListener("load", () => {
 </script>
 </body>
 </html>
+
 
 
 
